@@ -286,7 +286,6 @@ The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, Antigravity
 
 - **Node.js 22.5+** (uses built-in `node:sqlite` for OpenCode and Crush)
 - At least one supported tool installed
-- **Platforms**: Windows / macOS / Linux all supported. Handoff documents and CLI resume work identically everywhere; native session forging (Qoder family, Codex) writes identical data on every platform, auto-refreshes the GUI on macOS, and prints a manual-refresh hint on Windows
 
 ## Development
 

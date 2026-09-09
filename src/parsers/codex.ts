@@ -21,7 +21,6 @@ import { findFiles, mapConcurrent } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepo, homeDir } from '../utils/parser-helpers.js';
-import { isProcessRunning, launchGuiApp } from '../utils/platform.js';
 import { continuedSessionTitle } from '../utils/session-title.js';
 import { matchesCwd } from '../utils/slug.js';
 import {
@@ -1236,7 +1235,10 @@ export function forgeCodexGuiHandoffSession(
   handoffPath: string,
   recentMessages: ConversationMessage[] = [],
 ): ForgedCodexGuiSession | null {
-  if (!codexDesktopInstalled()) return null;
+  if (process.platform !== 'darwin') return null;
+  if (!fs.existsSync('/Applications/ChatGPT.app') && !fs.existsSync(path.join(homeDir(), 'Applications', 'ChatGPT.app'))) {
+    return null;
+  }
 
   // Reuse the CLI forge for the rollout itself; its chatId/taskName flow on.
   const cli = forgeCodexHandoffSession(session, handoffPath, recentMessages);
@@ -1249,31 +1251,14 @@ export function forgeCodexGuiHandoffSession(
   registerCodexThread(cli.chatId, cli.rolloutPath, session.cwd || process.cwd(), cli.taskName, cli.taskName);
 
   const appWasRunning = isCodexDesktopRunning();
-  launchGuiApp(CODEX_GUI_APP_NAME);
+  spawn('open', ['-a', CODEX_GUI_APP_NAME], { stdio: 'ignore', detached: true }).unref();
   // The running app's session list only re-queries on window creation (no
   // live refresh, no menu Reload) — open a fresh window via the File → New
   // Window menu item so the forged session shows up without a restart.
-  // Verified against the desktop app bundled with codex-cli 0.153.4. Windows
-  // has no scripted menu click — refreshed=false prints the manual hint.
-  const refreshed = appWasRunning ? (process.platform === 'darwin' ? openCodexNewWindow() : false) : true;
+  // Verified against the desktop app bundled with codex-cli 0.153.4.
+  const refreshed = appWasRunning ? openCodexNewWindow() : true;
 
   return { ...cli, appWasRunning, refreshed };
-}
-
-/** True when the Codex desktop app is installed: ChatGPT.app bundle probe on
- *  macOS; the shared ~/.codex state DB existing (created by the desktop
- *  app-server) on Windows. */
-export function codexDesktopInstalled(): boolean {
-  if (process.platform === 'darwin') {
-    return (
-      fs.existsSync('/Applications/ChatGPT.app') ||
-      fs.existsSync(path.join(homeDir(), 'Applications', 'ChatGPT.app'))
-    );
-  }
-  if (process.platform === 'win32') {
-    return fs.existsSync(codexStateDbPath());
-  }
-  return false;
 }
 
 /** Click the app's File → New Window menu item (System Events; needs the
@@ -1314,7 +1299,6 @@ function openCodexNewWindow(): boolean {
 
 /** True when the ChatGPT.app Codex desktop process is running. */
 function isCodexDesktopRunning(): boolean {
-  if (process.platform === 'win32') return isProcessRunning('ChatGPT.exe');
   try {
     const out = spawnSync('pgrep', ['-f', 'ChatGPT.app/Contents/Resources/codex'], {
       encoding: 'utf8',

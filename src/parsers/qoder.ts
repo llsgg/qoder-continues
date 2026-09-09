@@ -19,7 +19,6 @@ import { findFiles, mapConcurrent } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
-import { isProcessRunning, launchGuiApp } from '../utils/platform.js';
 import { continuedSessionTitle } from '../utils/session-title.js';
 import { cwdFromSlug } from '../utils/slug.js';
 import {
@@ -423,53 +422,21 @@ interface SqliteDb {
 }
 
 const NEW_QODER_APP_NAME = 'Qoder';
-/** Windows process image name of the New Qoder app (Electron). */
-const NEW_QODER_WIN_PROCESS = 'Qoder.exe';
-
-/**
- * Plaintext SQLite registry of the New Qoder app (com.qoder.app.stable).
- * Electron's userData dir is `~/Library/Application Support/<name>` on macOS,
- * `%APPDATA%/<name>` on Windows and `~/.config/<name>` on Linux.
- * `QODER_APP_DB_PATH` overrides for non-standard installs.
- */
-function newQoderAppDbPath(): string {
-  if (process.env.QODER_APP_DB_PATH) return process.env.QODER_APP_DB_PATH;
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(homeDir(), 'AppData', 'Roaming');
-    return path.join(appData, 'com.qoder.app.stable', 'main.sqlite');
-  }
-  if (process.platform === 'darwin') {
-    return path.join(homeDir(), 'Library', 'Application Support', 'com.qoder.app.stable', 'main.sqlite');
-  }
-  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(homeDir(), '.config');
-  return path.join(xdgConfig, 'com.qoder.app.stable', 'main.sqlite');
-}
-
-/** True when the New Qoder app is installed: bundle probe on macOS, its
- *  Electron userData dir existing (implies a prior launch) elsewhere. */
-export function newQoderAppInstalled(): boolean {
-  if (process.env.QODER_APP_DB_PATH) return fs.existsSync(process.env.QODER_APP_DB_PATH);
-  if (process.platform === 'darwin') {
-    return (
-      fs.existsSync('/Applications/Qoder.app') || fs.existsSync(path.join(homeDir(), 'Applications', 'Qoder.app'))
-    );
-  }
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(homeDir(), 'AppData', 'Roaming');
-    return fs.existsSync(path.join(appData, 'com.qoder.app.stable'));
-  }
-  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(homeDir(), '.config');
-  return fs.existsSync(path.join(xdgConfig, 'com.qoder.app.stable'));
-}
+const NEW_QODER_DB_PATH = path.join(
+  process.env.HOME ?? '',
+  'Library',
+  'Application Support',
+  'com.qoder.app.stable',
+  'main.sqlite',
+);
 
 /** Native session titles from the New Qoder app's chat registry (WAL-safe
  *  read; best-effort — a missing db or an unavailable node:sqlite simply
  *  yields an empty index and sessions keep their first-message summary). */
 function loadNewQoderTitleIndex(): Map<string, string> {
   const index = new Map<string, string>();
-  const dbPath = newQoderAppDbPath();
-  if (!fs.existsSync(dbPath)) return index;
-  const db = openNewQoderDb(dbPath);
+  if (!fs.existsSync(NEW_QODER_DB_PATH)) return index;
+  const db = openNewQoderDb();
   if (!db) return index;
   try {
     const rows = db.prepare('SELECT session_id, title FROM chat_sessions').all() as Array<{
@@ -489,14 +456,14 @@ function loadNewQoderTitleIndex(): Map<string, string> {
   return index;
 }
 
-function openNewQoderDb(dbPath: string = newQoderAppDbPath()): SqliteDb | null {
+function openNewQoderDb(): SqliteDb | null {
   try {
     const require = createRequire(import.meta.url);
     const { DatabaseSync } = require('node:sqlite');
     // WAL mode: concurrent access from a running app is safe.
-    return new DatabaseSync(dbPath, { open: true, timeout: 15_000 }) as SqliteDb;
+    return new DatabaseSync(NEW_QODER_DB_PATH, { open: true, timeout: 15_000 }) as SqliteDb;
   } catch (err) {
-    logger.debug('qoder: node:sqlite unavailable or New Qoder db open failed', dbPath, err);
+    logger.debug('qoder: node:sqlite unavailable or New Qoder db open failed', NEW_QODER_DB_PATH, err);
     return null;
   }
 }
@@ -838,14 +805,15 @@ function reloadNewQoderRenderer(pid: number): boolean {
   return false;
 }
 
-const QODERWORK_WORKSPACE_PREFIX = () => path.join(homeDir(), '.qoderwork', 'workspace');
-const QODERWORK_DB_PATH = () => {
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(homeDir(), 'AppData', 'Roaming');
-    return path.join(appData, 'QoderWork', 'data', 'agents.db');
-  }
-  return path.join(homeDir(), 'Library', 'Application Support', 'QoderWork', 'data', 'agents.db');
-};
+const QODERWORK_WORKSPACE_PREFIX = path.join(process.env.HOME ?? '', '.qoderwork', 'workspace');
+const QODERWORK_DB_PATH = path.join(
+  process.env.HOME ?? '',
+  'Library',
+  'Application Support',
+  'QoderWork',
+  'data',
+  'agents.db',
+);
 
 /** Placeholder titles QoderWork writes before a chat has a real name. */
 const QODERWORK_UNTITLED = 'New Session';
@@ -869,7 +837,7 @@ function resolveQoderWorkContext(
   try {
     const require = createRequire(import.meta.url);
     const { DatabaseSync } = require('node:sqlite');
-    const db = new DatabaseSync(QODERWORK_DB_PATH(), { open: true, timeout: 15_000 }) as SqliteDb;
+    const db = new DatabaseSync(QODERWORK_DB_PATH, { open: true, timeout: 15_000 }) as SqliteDb;
     try {
       // The parser's session id is either the chat id or the transcript uuid
       // (sub_chats.session_id) — look the chat row up through both.
@@ -886,7 +854,7 @@ function resolveQoderWorkContext(
         typeof row?.name === 'string' && row.name.trim() && row.name !== QODERWORK_UNTITLED
           ? row.name.trim()
           : null;
-      if (!cwd.startsWith(QODERWORK_WORKSPACE_PREFIX() + path.sep)) {
+      if (!cwd.startsWith(QODERWORK_WORKSPACE_PREFIX + path.sep)) {
         return { cwd, title };
       }
       // Isolated workspace: only an attached additional directory reveals the
@@ -895,7 +863,7 @@ function resolveQoderWorkContext(
       const dirs = JSON.parse(row.additional_directories) as unknown[];
       const real = dirs.find(
         (d): d is string =>
-          typeof d === 'string' && d.length > 0 && !d.startsWith(QODERWORK_WORKSPACE_PREFIX()),
+          typeof d === 'string' && d.length > 0 && !d.startsWith(QODERWORK_WORKSPACE_PREFIX),
       );
       if (real) {
         logger.debug(`qoder: resolved real project dir ${real} for qoderwork session ${session.id}`);
@@ -1004,7 +972,7 @@ export async function forgeNewQoderHandoffSession(
   handoffPath: string,
   recentMessages: ConversationMessage[] = [],
 ): Promise<ForgedNewQoderSession | null> {
-  if (!fs.existsSync(newQoderAppDbPath())) return null;
+  if (process.platform !== 'darwin' || !fs.existsSync(NEW_QODER_DB_PATH)) return null;
 
   const db = openNewQoderDb();
   if (!db) return null;
@@ -1146,20 +1114,17 @@ export async function forgeNewQoderHandoffSession(
     // 5. Surface the session. A cold start loads the sidebar catalog during
     //    renderer initialization; when the app is already running, reload its
     //    renderer (menu 显示 → 重新载入) so the catalog picks up the forged
-    //    rows — without quitting the app. Windows has no scripted renderer
-    //    reload (refreshed=false makes the CLI print the manual-reload hint).
-    const appRunning =
-      appPid !== null || (process.platform === 'win32' && isProcessRunning(NEW_QODER_WIN_PROCESS));
-    if (!appRunning) {
-      launchGuiApp(NEW_QODER_APP_NAME);
+    //    rows — without quitting the app.
+    if (appPid === null) {
+      spawn('open', ['-a', NEW_QODER_APP_NAME], { stdio: 'ignore', detached: true }).unref();
     }
-    const refreshed = appRunning ? (appPid !== null ? reloadNewQoderRenderer(appPid) : false) : true;
+    const refreshed = appPid !== null ? reloadNewQoderRenderer(appPid) : true;
 
     return {
       chatId: sessionId,
       taskName,
       prepopulated: data.messages.length,
-      appWasRunning: appRunning,
+      appWasRunning: appPid !== null,
       refreshed,
     };
   } catch (err) {

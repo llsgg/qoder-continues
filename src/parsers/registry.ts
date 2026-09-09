@@ -21,6 +21,7 @@ import {
   parseRooCodeSessions,
 } from './cline.js';
 import {
+  codexDesktopInstalled,
   extractCodexContext,
   forgeCodexGuiHandoffSession,
   forgeCodexHandoffSession,
@@ -34,8 +35,18 @@ import { extractGeminiContext, parseGeminiSessions } from './gemini.js';
 import { extractKimiContext, parseKimiSessions } from './kimi.js';
 import { extractKiroContext, parseKiroSessions } from './kiro.js';
 import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
-import { extractQoderContext, forgeNewQoderHandoffSession, parseQoderSessions } from './qoder.js';
-import { extractQoderWorkContext, forgeQoderWorkHandoffSession, parseQoderWorkSessions } from './qoderwork.js';
+import {
+  extractQoderContext,
+  forgeNewQoderHandoffSession,
+  newQoderAppInstalled,
+  parseQoderSessions,
+} from './qoder.js';
+import {
+  extractQoderWorkContext,
+  forgeQoderWorkHandoffSession,
+  parseQoderWorkSessions,
+  qoderWorkAppInstalled,
+} from './qoderwork.js';
 import { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
 
 /**
@@ -81,10 +92,12 @@ export interface ToolAdapter {
   /**
    * macOS GUI-app target (no CLI binary). When set and the app is installed,
    * the tool is offered as a cross-tool handoff target: the handoff prompt is
-   * copied to the clipboard and the app is launched via `open -a`, since there
-   * is no CLI process to spawn with the prompt as an argument.
+   * copied to the clipboard and the app is launched (open -a / start), since
+   * there is no CLI process to spawn with the prompt as an argument.
+   * `isInstalled` is a cross-platform install probe; without it, macOS falls
+   * back to the .app-bundle check and other platforms treat the app as absent.
    */
-  guiApp?: { appName: string };
+  guiApp?: { appName: string; isInstalled?: () => boolean };
   /**
    * Optional full-auto handoff: create a native session in the target's own
    * store (GUI-app SQLite registries, CLI rollout files, …) so the user
@@ -751,7 +764,7 @@ register({
   envVar: 'CODEX_HOME',
   binaryName: 'codex',
   // The Codex desktop app is the GUI surface for handoffs into codex.
-  guiApp: { appName: 'ChatGPT' },
+  guiApp: { appName: 'ChatGPT', isInstalled: codexDesktopInstalled },
   // Full-auto handoff (qoder-family customization): forge a native rollout
   // + threads row in the shared ~/.codex store and open the desktop app —
   // lossless continuation without any paste. Falls back to the clipboard
@@ -1057,7 +1070,7 @@ register({
   binaryName: 'qodercli',
   binaryFallbacks: ['qoder'],
   // The New Qoder app is a GUI target without a spawnable CLI for handoffs.
-  guiApp: { appName: 'Qoder' },
+  guiApp: { appName: 'Qoder', isInstalled: newQoderAppInstalled },
   // Full-auto handoff (qoder-family customization): forge a native chat
   // session in the New Qoder app's plaintext SQLite store (session row +
   // history messages + sidebar placement) plus a chain-rebuilt transcript,
@@ -1101,7 +1114,7 @@ register({
   storagePath: '~/.qoderwork/projects/',
   envVar: 'QODERWORK_HOME',
   binaryName: 'qoderwork',
-  guiApp: { appName: 'QoderWork' },
+  guiApp: { appName: 'QoderWork', isInstalled: qoderWorkAppInstalled },
   // Full-auto handoff (qoder-family customization): forge a native task in
   // QoderWork's SQLite store + transcript, then trigger its agent via the
   // local MCP server. Falls back to clipboard handoff when preconditions

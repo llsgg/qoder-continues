@@ -15,7 +15,7 @@ import {
 } from './forward-flags.js';
 import { extractContext, saveContext } from './index.js';
 import { getSourceLabels, safePath } from './markdown.js';
-import { IS_WINDOWS, WHICH_CMD } from './platform.js';
+import { IS_WINDOWS, WHICH_CMD, launchGuiApp } from './platform.js';
 
 export interface HandoffContextOptions {
   preset?: string;
@@ -426,9 +426,20 @@ function guiAppPath(appName: string): string | null {
 }
 
 /**
- * Copy text to the macOS clipboard via pbcopy (best effort — resolves even
- * on failure so handoff continues with on-screen instructions only).
+ * Copy text to the system clipboard (best effort — resolves even on failure
+ * so handoff continues with on-screen instructions only).
+ *
+ * - macOS: `pbcopy` (UTF-8 stdin).
+ * - Windows: PowerShell `Set-Clipboard` via `-EncodedCommand` (UTF-16LE
+ *   base64) — immune to cmd.exe quoting and codepage mangling of CJK text.
+ * - Linux: `xclip`, falling back to `wl-copy`.
  */
+function copyToClipboard(text: string): Promise<boolean> {
+  if (IS_WINDOWS) return copyToClipboardWindows(text);
+  if (process.platform === 'darwin') return copyToClipboardMac(text);
+  return copyToClipboardLinux(text);
+}
+
 function copyToClipboardMac(text: string): Promise<boolean> {
   return new Promise((resolve) => {
     try {
@@ -443,22 +454,62 @@ function copyToClipboardMac(text: string): Promise<boolean> {
   });
 }
 
-/**
- * Launch a macOS GUI app via `open -a` (detached so continues can exit).
- */
-function openGuiApp(appName: string): Promise<boolean> {
+function copyToClipboardWindows(text: string): Promise<boolean> {
   return new Promise((resolve) => {
     try {
-      const child = spawn('open', ['-a', appName], { stdio: 'ignore', detached: true });
-      child.on('error', () => resolve(false));
-      child.on('spawn', () => {
-        child.unref();
-        resolve(true);
+      const payload = Buffer.from(text, 'utf8').toString('base64');
+      const script =
+        `Set-Clipboard -Value ([System.Text.Encoding]::UTF8.GetString(` +
+        `[System.Convert]::FromBase64String('${payload}')))`;
+      const encoded = Buffer.from(script, 'utf16le').toString('base64');
+      const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+        stdio: 'ignore',
       });
+      child.on('error', () => resolve(false));
+      child.on('close', (code) => resolve(code === 0));
     } catch {
       resolve(false);
     }
   });
+}
+
+function copyToClipboardLinux(text: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('xclip', ['-selection', 'clipboard'], { stdio: ['pipe', 'ignore', 'ignore'] });
+      child.stdin.on('error', () => {
+        // xclip missing — try wl-copy (Wayland) before giving up.
+        resolve(copyToClipboardWl(text));
+      });
+      child.stdin.write(text, () => child.stdin.end());
+      child.on('error', () => resolve(copyToClipboardWl(text)));
+      child.on('close', (code) => resolve(code === 0 || copyToClipboardWl(text)));
+    } catch {
+      resolve(copyToClipboardWl(text));
+    }
+  });
+}
+
+function copyToClipboardWl(text: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('wl-copy', [], { stdio: ['pipe', 'ignore', 'ignore'] });
+      child.stdin.on('error', () => resolve(false));
+      child.stdin.write(text, () => child.stdin.end());
+      child.on('error', () => resolve(false));
+      child.on('close', (code) => resolve(code === 0));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * Launch a GUI app (detached so continues can exit): `open -a` on macOS,
+ * `start` on Windows, direct spawn elsewhere.
+ */
+function openGuiApp(appName: string): Promise<boolean> {
+  return Promise.resolve(launchGuiApp(appName));
 }
 
 /**
@@ -478,27 +529,36 @@ async function guiHandoff(session: UnifiedSession, appName: string, handoffPath:
     'Read that file first (task background, key decisions, recent conversation, file changes), summarize your understanding of the current progress, and then we continue.',
   ].join('\n');
 
-  const copied = await copyToClipboardMac(prompt);
+  const copied = await copyToClipboard(prompt);
   const launched = await openGuiApp(appName);
 
   console.log();
   console.log(`  Handoff file: ${safePath(handoffPath)}`);
   if (copied) console.log('  Handoff prompt copied to clipboard');
   if (launched) console.log(`  ${appName} launched`);
-  console.log(
-    `  Create a new ${appName} session and paste${copied ? ' (Cmd+V)' : ' the prompt above'} to continue.`,
-  );
+  if (!copied) {
+    // Never leave the user with "paste the prompt above" and nothing above
+    // it — print the prompt so the handoff can proceed manually.
+    console.log('  Clipboard unavailable — copy this prompt manually:');
+    console.log();
+    console.log(prompt);
+    console.log();
+  }
+  const pasteHint = copied ? (IS_WINDOWS ? ' (Ctrl+V)' : ' (Cmd+V)') : ' the prompt above';
+  console.log(`  Create a new ${appName} session and paste${pasteHint} to continue.`);
 }
 
 export async function resolveToolBinaryName(
   tool: SessionSource,
   isAvailable: (binaryName: string) => Promise<boolean> = isBinaryAvailable,
 ): Promise<string | null> {
-  // GUI-app targets count as available when the macOS app is installed; the
+  // GUI-app targets count as available when the app is installed; the
   // app name doubles as the pseudo-binary marker (never exec'd directly —
   // nativeResume/crossToolResume intercept guiApp adapters before spawning).
+  // Adapters may provide a cross-platform install check; on macOS the
+  // .app-bundle probe is the default.
   const adapter = adapters[tool];
-  if (adapter?.guiApp && guiAppPath(adapter.guiApp.appName)) {
+  if (adapter?.guiApp && (adapter.guiApp.isInstalled?.() ?? guiAppPath(adapter.guiApp.appName) !== null)) {
     return adapter.guiApp.appName;
   }
   for (const candidate of getToolBinaryCandidates(tool)) {

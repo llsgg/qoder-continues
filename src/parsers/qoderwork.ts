@@ -12,6 +12,7 @@ import { findFiles } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
+import { launchGuiApp, openExternalUrl } from '../utils/platform.js';
 import { continuedSessionTitle } from '../utils/session-title.js';
 import { cwdFromSlug } from '../utils/slug.js';
 import { extractAnthropicToolData, extractThinkingHighlights } from '../utils/tool-extraction.js';
@@ -68,10 +69,24 @@ interface QoderWorkChatInfo {
 }
 
 function qoderWorkDbPath(): string {
-  return (
-    process.env.QODERWORK_DB_PATH ??
-    path.join(homeDir(), 'Library', 'Application Support', 'QoderWork', 'data', 'agents.db')
-  );
+  if (process.env.QODERWORK_DB_PATH) return process.env.QODERWORK_DB_PATH;
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(homeDir(), 'AppData', 'Roaming');
+    return path.join(appData, 'QoderWork', 'data', 'agents.db');
+  }
+  return path.join(homeDir(), 'Library', 'Application Support', 'QoderWork', 'data', 'agents.db');
+}
+
+/** True when the QoderWork app is installed: bundle probe on macOS; its data
+ *  store or MCP config existing (implies a prior run) elsewhere. */
+export function qoderWorkAppInstalled(): boolean {
+  if (process.platform === 'darwin') {
+    return (
+      fs.existsSync('/Applications/QoderWork.app') ||
+      fs.existsSync(path.join(homeDir(), 'Applications', 'QoderWork.app'))
+    );
+  }
+  return fs.existsSync(qoderWorkDbPath()) || fs.existsSync(path.join(homeDir(), '.qoderwork', 'mcp-adaptor.config'));
 }
 
 /** Chat registry keyed by both sub-chat session ids (transcript uuids) and
@@ -691,7 +706,7 @@ function forgeQoderWorkTranscript(
   // Transcript location mirrors the native layout: the runtime resolves
   // --resume <sessionId> under ~/.qoderwork/projects/<worktree-slug>/.
   const slug = worktree.replace(/\\/g, '/').replace(/:/g, '').replace(/[/.]/g, '-');
-  const dir = path.join(process.env.HOME ?? '', '.qoderwork', 'projects', slug);
+  const dir = path.join(homeDir(), '.qoderwork', 'projects', slug);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), `${out.join('\n')}\n`, 'utf8');
   return count;
@@ -773,13 +788,7 @@ function callQoderWorkMcp(
  * required (pure URL-scheme activation).
  */
 function openAllChatsView(): void {
-  try {
-    const child = spawn('open', ['qoder-work://all-chats'], { stdio: 'ignore', detached: true });
-    child.on('error', (err) => logger.debug('qoderwork: all-chats deeplink failed', err));
-    child.unref();
-  } catch (err) {
-    logger.debug('qoderwork: all-chats deeplink spawn failed', err);
-  }
+  openExternalUrl('qoder-work://all-chats');
 }
 
 export async function forgeQoderWorkHandoffSession(
@@ -787,9 +796,12 @@ export async function forgeQoderWorkHandoffSession(
   handoffPath: string,
   recentMessages: ConversationMessage[] = [],
 ): Promise<ForgedQoderWorkSession | null> {
-  const supportDir = path.join(process.env.HOME ?? '', 'Library', 'Application Support', 'QoderWork');
+  const supportDir =
+    process.platform === 'win32'
+      ? path.join(process.env.APPDATA || path.join(homeDir(), 'AppData', 'Roaming'), 'QoderWork')
+      : path.join(homeDir(), 'Library', 'Application Support', 'QoderWork');
   const dbPath = path.join(supportDir, 'data', 'agents.db');
-  const mcpConfigPath = path.join(process.env.HOME ?? '', '.qoderwork', 'mcp-adaptor.config');
+  const mcpConfigPath = path.join(homeDir(), '.qoderwork', 'mcp-adaptor.config');
   if (!fs.existsSync(dbPath) || !fs.existsSync(mcpConfigPath)) {
     logger.debug('qoderwork: forge preconditions missing (db or mcp config)');
     return null;
@@ -810,11 +822,11 @@ export async function forgeQoderWorkHandoffSession(
   const subChatId = randomId(16);
   const sessionId = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  const sourceCwd = session.cwd || process.env.HOME || '';
+  const sourceCwd = session.cwd || homeDir();
   // Unified continuation title: 「续」+ source title (native registry title >
   // summary > first user prompt).
   const taskName = continuedSessionTitle(session, recentMessages);
-  const worktree = path.join(process.env.HOME ?? '', '.qoderwork', 'workspace', chatId);
+  const worktree = path.join(homeDir(), '.qoderwork', 'workspace', chatId);
   // Cross-source fallback lines: the unified conversation converted to the
   // Anthropic line shape (used only when the source transcript itself yields
   // no forgeable lines).
@@ -880,7 +892,7 @@ export async function forgeQoderWorkHandoffSession(
     // from the DB (needsDbLoad is true while the cache has no user message).
     cleanupOldMarkerTasks(opened.db, now);
     const markerChatId = `qw${randomId(14)}`;
-    const markerWorktree = path.join(process.env.HOME ?? '', '.qoderwork', 'workspace', markerChatId);
+    const markerWorktree = path.join(homeDir(), '.qoderwork', 'workspace', markerChatId);
     fs.mkdirSync(markerWorktree, { recursive: true });
     // archived_at is set at creation so the marker never appears in the
     // sidebar or all-chats list (listChats filters archived_at IS NULL) —
@@ -936,7 +948,7 @@ export async function forgeQoderWorkHandoffSession(
 
     // Activate the app on the all-chats view, which re-queries the DB on
     // mount — the forged task appears there without an app restart.
-    spawn('open', ['-a', 'QoderWork'], { stdio: 'ignore', detached: true }).unref();
+    launchGuiApp('QoderWork');
     openAllChatsView();
 
     return { chatId, taskName, prepopulated };

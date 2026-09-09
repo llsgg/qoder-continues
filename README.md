@@ -249,6 +249,7 @@ shell:
 
 - **Node.js 22.5+**（OpenCode 和 Crush 解析依赖内置 `node:sqlite`）
 - 至少安装了一个支持的工具
+- **平台**：Windows / macOS / Linux 全支持。交接文档与 CLI 接续全平台一致；原生会话伪造（Qoder 系、Codex）的数据写入全平台一致，macOS 上还能自动刷新 GUI，Windows 上伪造后按提示手动刷新窗口即可
 
 ## 开发
 

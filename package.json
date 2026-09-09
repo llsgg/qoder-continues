@@ -1,6 +1,6 @@
 {
   "name": "qoder-continues",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Never lose context. Resume any AI coding session across Qoder, QoderWork, Codex, Claude Code, Copilot, Gemini CLI, Cursor, Amp, Cline, Roo Code, Kilo Code, Kiro, Crush, OpenCode, Droid & Antigravity — with native session forging for the Qoder family.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

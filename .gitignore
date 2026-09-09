@@ -1,0 +1,65 @@
+node_modules/
+dist/
+*.tgz
+.DS_Store
+.continues/
+.continues-handoff.md
+.agent-workspace/
+stress-test-output.log
+.battle-test/
+# Generated / local tooling
+.agents/
+.claude/skills/
+.greptile/
+.superset/
+.windsurf/
+AGENTS.md
+REVIEW.md
+skills-lock.json
+.claude/CLAUDE.md
+.claude/settings.local.json
+.emdash.json
+
+# Added by run-repo-cleanup init-to-delete.py
+# to-delete/ sweep folder - never tracked, used for quarantine before real deletion
+to-delete/
+
+# Secrets (never tracked)
+.env
+.env.local
+.env.*.local
+*.pem
+*.p12
+id_rsa
+id_rsa.pub
+*.key
+credentials.json
+service-account.json
+
+# AI agent session artifacts
+.continues-handoff.md
+.claude-session*
+.cursor-session*
+.aider*
+.design-soul/
+derailment-notes/
+derail-notes/
+derail-results/
+
+# Editor scratch
+.vscode/settings.local.json
+.idea/workspace.xml
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local-only test / debug output
+scratch/
+tmp/
+*.log
+# end run-repo-cleanup
+
+# Internal (not for public repo)
+.aoneci/
+docs/forge/publishing.md
